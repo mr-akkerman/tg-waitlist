@@ -5,9 +5,68 @@ import { validateInitData } from "@/lib/telegram-auth";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_ENTRIES_PER_USER = 10;
+const MAX_BODY_SIZE = 2048; // 2KB — enough for initData + email
+
+function getAllowedOrigins(): string[] {
+  const origins: string[] = [];
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    origins.push(process.env.NEXT_PUBLIC_APP_URL);
+  }
+  if (process.env.PROXY_DOMAIN) {
+    origins.push(`https://${process.env.PROXY_DOMAIN}`);
+  }
+  return origins;
+}
+
+export async function OPTIONS(request: Request) {
+  const origin = request.headers.get("origin") || "";
+  const allowed = getAllowedOrigins();
+
+  if (allowed.length > 0 && !allowed.includes(origin)) {
+    return new NextResponse(null, { status: 403 });
+  }
+
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "POST",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Max-Age": "86400",
+    },
+  });
+}
 
 export async function POST(request: Request) {
   try {
+    // --- VULN-006 fix: validate Content-Type ---
+    const contentType = request.headers.get("content-type");
+    if (!contentType?.includes("application/json")) {
+      return NextResponse.json(
+        { error: "Unsupported content type" },
+        { status: 415 }
+      );
+    }
+
+    // --- VULN-007 fix: reject oversized payloads ---
+    const contentLength = parseInt(request.headers.get("content-length") || "0");
+    if (contentLength > MAX_BODY_SIZE) {
+      return NextResponse.json(
+        { error: "Payload too large" },
+        { status: 413 }
+      );
+    }
+
+    // --- VULN-004 fix: check Origin ---
+    const origin = request.headers.get("origin");
+    const allowedOrigins = getAllowedOrigins();
+    if (origin && allowedOrigins.length > 0 && !allowedOrigins.includes(origin)) {
+      return NextResponse.json(
+        { error: "Forbidden" },
+        { status: 403 }
+      );
+    }
+
     const body = await request.json();
     const { initData, email } = body;
 
@@ -78,7 +137,20 @@ export async function POST(request: Request) {
       { success: true, id: result.rows[0].id },
       { status: 201 }
     );
-  } catch (error) {
+  } catch (error: unknown) {
+    // --- VULN-005 fix: handle unique constraint violation ---
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code: string }).code === "23505"
+    ) {
+      return NextResponse.json(
+        { error: "This email has already been submitted" },
+        { status: 409 }
+      );
+    }
+
     console.error(
       "Failed to submit email:",
       error instanceof Error ? error.message : "Unknown error"
