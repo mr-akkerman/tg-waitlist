@@ -187,8 +187,8 @@ export default function Home() {
           className="animate-fade-in-up animate-delay-100 mb-8 text-[15px] leading-relaxed"
           style={{ color: "var(--tg-hint)" }}
         >
-          Оставь свой email, и мы напишем тебе, когда все будет готово. Никакого
-          спама, только важные обновления.
+          Оставь свой email, и мы напишем тебе, если мы потеряем с тобой основную связь. Никакого
+          спама, только экстренная связь!
         </p>
 
         {/* Input */}
