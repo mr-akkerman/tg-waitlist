@@ -1,0 +1,76 @@
+# ==========================================================================
+# Reverse proxy: RU server -> Vercel
+#
+# Allows users in Russia to access the Vercel-hosted project
+# through a proxy server on a Russian host.
+#
+# Flow: User -> Traefik (TLS, PROXY_DOMAIN) -> nginx -> Vercel (TARGET_DOMAIN)
+#
+# Environment variables (set in Portainer or .env):
+#   TARGET_DOMAIN  - Vercel project domain (e.g. my-app.vercel.app)
+#   PROXY_DOMAIN   - Domain pointing to this server (e.g. app.example.ru)
+#
+# NOTE: $$ in the command section is docker-compose escaping.
+#       Compose replaces $$ with a single $ before passing to the container.
+# ==========================================================================
+
+version: "3.7"
+
+services:
+  tg-waitlist-proxy:
+    image: nginx:alpine
+    environment:
+      - TARGET_DOMAIN=${TARGET_DOMAIN}
+      - PROXY_DOMAIN=${PROXY_DOMAIN}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cat << 'NGINXCONF' > /tmp/default.conf.template
+        server {
+            listen 80;
+            server_name _;
+
+            location / {
+                resolver 8.8.8.8 1.1.1.0 valid=300s ipv6=off;
+                resolver_timeout 5s;
+
+                set $$upstream https://$${TARGET_DOMAIN};
+                proxy_pass $$upstream$$request_uri;
+
+                proxy_set_header Host $${TARGET_DOMAIN};
+                proxy_set_header X-Real-IP $$remote_addr;
+                proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_set_header Connection "";
+
+                proxy_ssl_server_name on;
+                proxy_ssl_protocols TLSv1.2 TLSv1.3;
+                proxy_http_version 1.1;
+
+                proxy_redirect https://$${TARGET_DOMAIN}/ https://$${PROXY_DOMAIN}/;
+
+                proxy_next_upstream error timeout http_502;
+                proxy_next_upstream_tries 2;
+
+                proxy_buffer_size 16k;
+                proxy_buffers 4 32k;
+            }
+        }
+        NGINXCONF
+        envsubst '$${TARGET_DOMAIN} $${PROXY_DOMAIN}' < /tmp/default.conf.template > /etc/nginx/conf.d/default.conf
+        exec nginx -g 'daemon off;'
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tg-waitlist-proxy.rule=Host(`${PROXY_DOMAIN}`)"
+      - "traefik.http.routers.tg-waitlist-proxy.entrypoints=websecure"
+      - "traefik.http.routers.tg-waitlist-proxy.tls.certresolver=myresolver"
+      - "traefik.http.services.tg-waitlist-proxy.loadbalancer.server.port=80"
+    networks:
+      - web
+    restart: unless-stopped
+
+networks:
+  web:
+    external: true
+    name: web
