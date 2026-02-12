@@ -50,6 +50,9 @@ services:
 
                 proxy_redirect https://$${TARGET_DOMAIN}/ https://$${PROXY_DOMAIN}/;
 
+                proxy_next_upstream error timeout http_502;
+                proxy_next_upstream_tries 2;
+
                 proxy_buffer_size 16k;
                 proxy_buffers 4 32k;
             }
