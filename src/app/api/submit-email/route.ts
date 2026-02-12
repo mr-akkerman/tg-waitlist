@@ -115,7 +115,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // --- 3. Atomic INSERT with limit check (VULN-002 fix) ---
+    // --- 3. Atomic INSERT with limit check + idempotent duplicate handling ---
     const result = await getDb().execute(sql`
       INSERT INTO waitlist_entries (telegram_user_id, email)
       SELECT ${telegramUserId}, ${trimmedEmail}
@@ -123,34 +123,36 @@ export async function POST(request: Request) {
         SELECT count(*) FROM waitlist_entries
         WHERE telegram_user_id = ${telegramUserId}
       ) < ${MAX_ENTRIES_PER_USER}
+      ON CONFLICT (telegram_user_id, email) DO NOTHING
       RETURNING id
     `);
 
-    if (result.rows.length === 0) {
+    if (result.rows.length > 0) {
       return NextResponse.json(
-        { error: "Submission limit reached" },
-        { status: 429 }
+        { success: true, id: result.rows[0].id },
+        { status: 201 }
+      );
+    }
+
+    // No rows: either duplicate (idempotent) or limit reached
+    const existing = await getDb().execute(sql`
+      SELECT id FROM waitlist_entries
+      WHERE telegram_user_id = ${telegramUserId} AND email = ${trimmedEmail}
+      LIMIT 1
+    `);
+
+    if (existing.rows.length > 0) {
+      return NextResponse.json(
+        { success: true, id: existing.rows[0].id },
+        { status: 200 }
       );
     }
 
     return NextResponse.json(
-      { success: true, id: result.rows[0].id },
-      { status: 201 }
+      { error: "Submission limit reached" },
+      { status: 429 }
     );
   } catch (error: unknown) {
-    // --- VULN-005 fix: handle unique constraint violation ---
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error as { code: string }).code === "23505"
-    ) {
-      return NextResponse.json(
-        { error: "This email has already been submitted" },
-        { status: 409 }
-      );
-    }
-
     console.error(
       "Failed to submit email:",
       error instanceof Error ? error.message : "Unknown error"
