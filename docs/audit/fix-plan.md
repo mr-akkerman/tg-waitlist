@@ -2,6 +2,7 @@
 
 **Дата:** 2026-02-12
 **Приоритет:** Подготовка к запуску на 300-350к аудитории
+**Текущая инфраструктура:** Vercel Pro + Neon Free (готовы оплатить upgrade)
 
 Исправления разбиты на этапы по приоритету. Каждый этап должен быть завершён перед переходом к следующему.
 
@@ -71,20 +72,15 @@ RETURNING id;
 **Что сделать:**
 Реализовать многоуровневый rate limiting.
 
-**Уровень 1 — Vercel (рекомендуется):**
-Использовать `@vercel/firewall` или Vercel WAF (Web Application Firewall) для:
-- Глобальный лимит: 100 req/s на эндпоинт
-- По IP: 10 req/min на IP-адрес
+**Уровень 1 — Vercel Firewall (рекомендуется, уже включён в Pro):**
+В Vercel Dashboard → Firewall → Rules создать правило:
+- **Rule:** Rate limit POST `/api/submit-email`
+- **Limit:** 5 requests per 60 seconds per IP
+- **Action:** Block (429)
 
-**Уровень 2 — Код приложения (запасной):**
-Использовать Vercel KV (Redis) или Upstash Redis для in-memory rate limiting:
-```
-Ключ: `rl:ip:{ip_address}`
-TTL: 60 секунд
-Лимит: 5 запросов в минуту на IP
-```
+Это самый эффективный уровень — запросы блокируются на edge, ещё до serverless function.
 
-**Уровень 3 — Proxy (Nginx):**
+**Уровень 2 — Proxy (Nginx):**
 Добавить в конфигурацию nginx:
 ```nginx
 limit_req_zone $binary_remote_addr zone=submit:10m rate=5r/m;
@@ -94,11 +90,20 @@ location /api/submit-email {
     ...
 }
 ```
+Это защитит от спама через RU-прокси (через него все идут с одного IP для Vercel, но nginx видит реальный IP клиента).
+
+**Уровень 3 — Код приложения (дополнительно, опционально):**
+Использовать Upstash Redis (бесплатный tier) для in-memory rate limiting:
+```
+Ключ: `rl:ip:{ip_address}`
+TTL: 60 секунд
+Лимит: 5 запросов в минуту на IP
+```
 
 **Файлы:**
-- `src/app/api/submit-email/route.ts` — добавить проверку rate limit
 - `deploy/proxy/docker-compose.yml` — добавить nginx rate limiting
-- `package.json` — добавить зависимость (если Upstash)
+- Vercel Dashboard — настроить Firewall rule
+- (опционально) `src/app/api/submit-email/route.ts` + `package.json` — если Upstash
 
 ---
 
@@ -387,14 +392,25 @@ services:
 
 ### 4.3. Upgrade инфраструктуры
 
-**Vercel:**
-- Перейти на Pro план ($20/мес)
-- Настроить Function Region ближе к Neon DB (по умолчанию обе в us-east-1)
+**Vercel (уже на Pro — OK):**
+- Настроить Function Region ближе к Neon DB (проверить в Vercel Dashboard → Settings → Functions → Region)
+- Включить Vercel Firewall (Dashboard → Firewall)
+- Рассмотреть Fluid Compute для снижения cold starts
 
-**Neon:**
-- Перейти минимум на Scale план
-- Включить autoscaling (0.25 - 4 vCPU)
-- Убедиться, что регион совпадает с регионом Vercel
+**Neon (сейчас Free — нужен upgrade):**
+
+| План | Цена | vCPU | Storage | Compute Hours | Подойдёт? |
+|------|------|------|---------|---------------|-----------|
+| Free | $0 | 0.25 | 0.5 GB | 191.9 ч/мес | НЕТ — упрётся в compute при пиковой нагрузке |
+| Launch | **$19/мес** | autoscale до 4 | 10 GB | 300 ч/мес | **ДА — рекомендуется** |
+| Scale | $69/мес | autoscale до 8 | 50 GB | 750 ч/мес | Избыточен для разовой кампании |
+
+**Рекомендация: Neon Launch ($19/мес).** Для единичной кампании на 60-70к submissions этого более чем достаточно. Autoscaling обеспечит вычислительные мощности в пике.
+
+**Действия после upgrade Neon:**
+1. Проверить, что регион Neon совпадает с регионом Vercel Functions (обычно us-east-1)
+2. Включить autoscaling в настройках проекта Neon (Compute → Autoscaling → Min 0.25, Max 4 vCPU)
+3. Проверить connection string — он не меняется при upgrade
 
 ---
 
@@ -446,16 +462,28 @@ resolver 8.8.8.8 77.88.8.8 1.1.1.0 valid=300s ipv6=off;
 
 ## Чек-лист перед запуском
 
+### Инфраструктура
+- [ ] Vercel Pro — активен (уже есть)
+- [ ] Vercel Firewall — настроен rate limit на `/api/submit-email`
+- [ ] Vercel Function Region — совпадает с регионом Neon
+- [ ] Neon — upgrade до Launch ($19/мес)
+- [ ] Neon — autoscaling включён (min 0.25, max 4 vCPU)
+- [ ] Neon — регион совпадает с Vercel
+
+### Код и БД
 - [ ] **Этап 1 полностью завершён** (все КРИТИЧЕСКИЕ исправлены)
 - [ ] **Этап 2 полностью завершён** (все ВЫСОКИЕ исправлены)
-- [ ] Vercel на Pro-плане
-- [ ] Neon на Scale-плане с autoscaling
-- [ ] Индекс `telegram_user_id` создан и применён
+- [ ] Индекс `telegram_user_id` создан и применён (`drizzle-kit push`)
 - [ ] Unique index `(telegram_user_id, email)` создан
-- [ ] Rate limiting работает (проверить вручную)
 - [ ] Telegram initData верификация работает (проверить из реального Telegram бота)
+- [ ] `TELEGRAM_BOT_TOKEN` добавлен в Vercel Environment Variables
+
+### Прокси
 - [ ] Прокси настроен с rate limiting и worker_processes
-- [ ] Мониторинг включён (Vercel Analytics + health check)
-- [ ] Нагрузочный тест проведён (минимум 100 RPS в течение 5 минут)
-- [ ] Функциональный тест: отправка email из Telegram WebApp работает
 - [ ] DNS для PROXY_DOMAIN работает и SSL сертификат получен
+
+### Тестирование
+- [ ] Функциональный тест: отправка email из Telegram WebApp работает
+- [ ] Rate limiting тест: 6+ запросов за минуту с одного IP блокируются
+- [ ] Нагрузочный тест: минимум 100 RPS в течение 5 минут без ошибок
+- [ ] Мониторинг включён (Vercel Analytics + health check)
