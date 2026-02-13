@@ -16,23 +16,21 @@ export default function Home() {
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
   const handleSubmit = useCallback(async () => {
-    if (!telegramUserId || !isValidEmail(email)) return;
-
     const webapp = getTelegramWebApp();
+    if (!webapp || !telegramUserId || !isValidEmail(email)) return;
+
     setState("loading");
     setErrorMessage("");
 
-    if (webapp) {
-      webapp.MainButton.showProgress(true);
-      webapp.HapticFeedback.selectionChanged();
-    }
+    webapp.MainButton.showProgress(true);
+    webapp.HapticFeedback.selectionChanged();
 
     try {
       const res = await fetch("/api/submit-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          telegram_user_id: telegramUserId,
+          initData: webapp.initData,
           email: email.trim(),
         }),
       });
